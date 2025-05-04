@@ -34,3 +34,8 @@ next-env.d.ts
 
 # Firebase emulator logs
 *-debug.log
+
+# Nested SilentZone directory (backup)
+/SilentZone/
+/SilentZone_backup/
+/backup/
