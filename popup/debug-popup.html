@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SilentZone Debug</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      width: 400px;
+    }
+    button {
+      margin: 5px;
+      padding: 8px 16px;
+      background-color: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #2563eb;
+    }
+    pre {
+      background-color: #f3f4f6;
+      padding: 10px;
+      border-radius: 4px;
+      overflow: auto;
+      max-height: 300px;
+    }
+  </style>
+</head>
+<body>
+  <h1>SilentZone Debug</h1>
+  
+  <div>
+    <button id="checkAuthBtn">Check Auth</button>
+    <button id="checkRulesBtn">Check Rules</button>
+    <button id="forceSyncBtn">Force Sync</button>
+    <button id="clearStorageBtn">Clear Storage</button>
+  </div>
+  
+  <h2>Results:</h2>
+  <pre id="results">Click a button to see results...</pre>
+  
+  <script>
+    document.getElementById('checkAuthBtn').addEventListener('click', function() {
+      chrome.storage.local.get(['authToken', 'user'], function(result) {
+        const output = {
+          hasAuthToken: !!result.authToken,
+          tokenPreview: result.authToken ? result.authToken.substring(0, 10) + '...' : 'None',
+          user: result.user || 'None'
+        };
+        document.getElementById('results').textContent = JSON.stringify(output, null, 2);
+      });
+    });
+    
+    document.getElementById('checkRulesBtn').addEventListener('click', function() {
+      chrome.storage.local.get('muteRules', function(result) {
+        const output = {
+          hasRules: !!result.muteRules,
+          ruleCount: result.muteRules ? result.muteRules.length : 0,
+          rules: result.muteRules || []
+        };
+        document.getElementById('results').textContent = JSON.stringify(output, null, 2);
+      });
+    });
+    
+    document.getElementById('forceSyncBtn').addEventListener('click', function() {
+      document.getElementById('results').textContent = 'Syncing...';
+      
+      chrome.runtime.sendMessage({ action: 'syncNow' }, function(response) {
+        const output = {
+          success: !!response?.success,
+          response: response || 'No response'
+        };
+        
+        // Check rules after sync
+        chrome.storage.local.get('muteRules', function(result) {
+          output.hasRules = !!result.muteRules;
+          output.ruleCount = result.muteRules ? result.muteRules.length : 0;
+          output.rules = result.muteRules || [];
+          
+          document.getElementById('results').textContent = JSON.stringify(output, null, 2);
+        });
+      });
+    });
+    
+    document.getElementById('clearStorageBtn').addEventListener('click', function() {
+      if (confirm('Are you sure you want to clear all storage? This will sign you out.')) {
+        chrome.storage.local.clear(function() {
+          document.getElementById('results').textContent = 'Storage cleared. Please reload the extension.';
+        });
+      }
+    });
+  </script>
+</body>
+</html>

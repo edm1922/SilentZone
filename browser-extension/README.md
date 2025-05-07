@@ -52,7 +52,7 @@ For production deployment, you may want to:
 
 ## Integration with SilentZone Web App
 
-The extension communicates with the SilentZone web application to synchronize mute rules. By default, it connects to `http://localhost:9002` for development. Update the `webAppUrl` in the configuration to point to your production server.
+The extension communicates with the SilentZone web application to synchronize mute rules. It connects to `https://silentzone.vercel.app` for production. If you're developing locally, update the `webAppUrl` in the configuration files to point to your local server (e.g., `http://localhost:9002`).
 
 ## License
 

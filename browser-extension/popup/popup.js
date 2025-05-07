@@ -21,11 +21,26 @@ let isActive = true;
 let muteRules = [];
 let isAuthenticated = false;
 
-// Configuration
-const config = {
-  webAppUrl: 'http://localhost:9002',
+// Import the direct authentication functions
+import { getAuthToken } from '../scripts/direct-auth.js';
+
+// Configuration - using a different name to avoid conflicts
+const popupConfig = {
+  webAppUrl: 'http://localhost:9002', // Default URL of the SilentZone web app
   debugMode: true
 };
+
+// Try to load the web app URL from storage
+chrome.storage.local.get(['webAppUrl'], (result) => {
+  if (result.webAppUrl) {
+    popupConfig.webAppUrl = result.webAppUrl;
+    log('Loaded web app URL from storage:', popupConfig.webAppUrl);
+  } else {
+    // Store the default URL
+    chrome.storage.local.set({ webAppUrl: popupConfig.webAppUrl });
+    log('Using default web app URL:', popupConfig.webAppUrl);
+  }
+});
 
 // Initialize when the popup loads
 document.addEventListener('DOMContentLoaded', initialize);
@@ -35,6 +50,7 @@ document.addEventListener('DOMContentLoaded', initialize);
  */
 function initialize() {
   log('SilentZone popup initialized');
+  console.log('[SilentZone Popup] Initializing popup...');
 
   // Get DOM elements
   statusDot = document.getElementById('statusDot');
@@ -48,6 +64,9 @@ function initialize() {
   addRuleBtn = document.getElementById('addRuleBtn');
   refreshBtn = document.getElementById('refreshBtn');
   const lastSyncInfo = document.getElementById('lastSyncInfo');
+
+  // Check API endpoint directly
+  checkApiEndpoint();
 
   // Debug DOM elements
   log('DOM Elements:');
@@ -317,32 +336,49 @@ function loadState() {
  */
 function loadMuteRules() {
   log('Loading mute rules from storage and background script');
+  console.log('[SilentZone Popup] Loading mute rules from storage and background script');
 
   // First, try to get rules directly from storage
   chrome.storage.local.get('muteRules', (result) => {
     log('Mute rules in storage:', result.muteRules ? JSON.stringify(result.muteRules) : 'none');
     log('Number of rules in storage:', result.muteRules ? result.muteRules.length : 0);
+    console.log('[SilentZone Popup] Number of rules in storage:', result.muteRules ? result.muteRules.length : 0);
+
+    if (result.muteRules && result.muteRules.length > 0) {
+      console.log('[SilentZone Popup] First rule in storage:', JSON.stringify(result.muteRules[0]));
+    } else {
+      console.log('[SilentZone Popup] No rules found in storage');
+    }
 
     // If we have rules in storage, use them immediately
     if (result.muteRules && result.muteRules.length > 0) {
       log('Found rules in storage, using those immediately');
+      console.log('[SilentZone Popup] Found rules in storage, using those immediately');
       muteRules = result.muteRules;
       renderMuteList();
     }
 
     // Also try to get rules from background script as a backup
+    console.log('[SilentZone Popup] Requesting rules from background script');
     chrome.runtime.sendMessage({ action: 'getMuteRules' }, (response) => {
       log('Got mute rules response from background:', response ? 'yes' : 'no');
+      console.log('[SilentZone Popup] Got response from background script:', response ? 'yes' : 'no');
 
       if (response && response.muteRules && response.muteRules.length > 0) {
         log('Number of mute rules from background:', response.muteRules.length);
         log('First rule details:', JSON.stringify(response.muteRules[0]));
+        console.log('[SilentZone Popup] Number of rules from background:', response.muteRules.length);
+        console.log('[SilentZone Popup] First rule from background:', JSON.stringify(response.muteRules[0]));
 
         // Only update if we got rules from background
         muteRules = response.muteRules;
         renderMuteList();
       } else {
         log('No additional mute rules found in background script');
+        console.log('[SilentZone Popup] No rules found in background script, trying to sync with server');
+
+        // Try to sync with server
+        syncNow();
       }
     });
   });
@@ -370,7 +406,7 @@ function setupEventListeners() {
   if (openAppBtn) {
     log('Adding click listener to openAppBtn');
     openAppBtn.addEventListener('click', () => {
-      chrome.tabs.create({ url: config.webAppUrl });
+      chrome.tabs.create({ url: popupConfig.webAppUrl });
     });
   } else {
     log('WARNING: openAppBtn not found');
@@ -394,7 +430,7 @@ function setupEventListeners() {
   const openSignupBtn = document.getElementById('openSignupBtn');
   if (openSignupBtn) {
     openSignupBtn.addEventListener('click', () => {
-      chrome.tabs.create({ url: `${config.webAppUrl}/signup` });
+      chrome.tabs.create({ url: `${popupConfig.webAppUrl}/signup` });
     });
   }
 
@@ -517,7 +553,21 @@ function updateStatusUI() {
  */
 function saveState() {
   chrome.storage.local.set({ isActive }, () => {
-    log('Saved extension state');
+    log('Saved extension state:', isActive ? 'Active' : 'Paused');
+
+    // Notify all content scripts about the state change
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        try {
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'updateActiveState',
+            isActive: isActive
+          });
+        } catch (error) {
+          // Ignore errors from tabs that don't have the content script
+        }
+      });
+    });
   });
 }
 
@@ -926,10 +976,12 @@ function refreshRules() {
  */
 function syncNow() {
   log('syncNow function called');
+  console.log('[SilentZone Popup] Manual sync initiated');
 
   // Check if syncBtn exists
   if (!syncBtn) {
     log('ERROR: syncBtn is null or undefined');
+    console.error('[SilentZone Popup] ERROR: syncBtn is null or undefined');
     alert('Error: Sync button not found. Please reload the extension.');
     return;
   }
@@ -937,6 +989,7 @@ function syncNow() {
   // Check if authenticated
   if (!isAuthenticated) {
     log('Not authenticated, showing alert');
+    console.error('[SilentZone Popup] Not authenticated, cannot sync');
     alert('Please sign in to sync your mute rules');
     return;
   }
@@ -949,27 +1002,35 @@ function syncNow() {
   syncBtn.style.opacity = '0.7';
 
   log('Manually triggering sync...');
+  console.log('[SilentZone Popup] Manually triggering sync with server');
 
   // First, check if we need to do a force sync
   // This happens when there's a mismatch between extension and web app
-  chrome.storage.local.get(['lastSyncStatus'], (result) => {
+  chrome.storage.local.get(['lastSyncStatus', 'authToken'], (result) => {
     const lastSyncStatus = result.lastSyncStatus || {};
     const syncFailCount = lastSyncStatus.failCount || 0;
+    const authToken = result.authToken;
+
+    console.log('[SilentZone Popup] Auth token for sync:', authToken ? 'Present' : 'Missing');
 
     // If we've had multiple sync failures, try a force sync
     const shouldForceSync = syncFailCount >= 2;
 
     log(`Sync fail count: ${syncFailCount}, Should force sync: ${shouldForceSync}`);
+    console.log(`[SilentZone Popup] Sync fail count: ${syncFailCount}, Using force sync: ${shouldForceSync}`);
 
     // Choose which sync action to use
     const syncAction = shouldForceSync ? 'forceFullSync' : 'syncNow';
 
     if (shouldForceSync) {
       log('USING FORCE SYNC due to previous sync failures');
+      console.log('[SilentZone Popup] Using FORCE SYNC due to previous failures');
     }
 
+    console.log(`[SilentZone Popup] Sending ${syncAction} message to background script`);
     chrome.runtime.sendMessage({ action: syncAction }, (response) => {
       log(`${syncAction} response:`, response);
+      console.log(`[SilentZone Popup] ${syncAction} response:`, response);
 
       if (response && response.success) {
         // Update last sync time
@@ -979,44 +1040,53 @@ function syncNow() {
           lastSyncTime: now,
           lastSyncStatus: { failCount: 0, lastSuccess: now }
         });
+        console.log('[SilentZone Popup] Sync successful, updated lastSyncTime');
 
         // Reload mute rules
+        console.log('[SilentZone Popup] Reloading mute rules after successful sync');
         loadMuteRules();
 
         log('Sync completed successfully');
       } else {
         // Update sync fail count
+        console.error('[SilentZone Popup] Sync failed, updating fail count');
         chrome.storage.local.set({
           lastSyncStatus: {
             failCount: syncFailCount + 1,
             lastFail: Date.now()
           }
         });
-      // Check if authentication error
-      if (response?.error && (response.error.includes('Unauthorized') || response.error.includes('invalid token'))) {
-        // Clear auth data and show login form
-        chrome.storage.local.remove(['authToken', 'user'], () => {
-          checkAuthStatus();
 
-          // Show the token expired message
-          const tokenExpiredMessage = document.getElementById('token-expired-message');
-          if (tokenExpiredMessage) {
-            tokenExpiredMessage.textContent = 'Your session has expired. Please sign in again.';
-            tokenExpiredMessage.classList.remove('hidden');
-          }
-        });
+        // Check if authentication error
+        if (response?.error && (response.error.includes('Unauthorized') || response.error.includes('invalid token'))) {
+          console.error('[SilentZone Popup] Authentication error during sync:', response.error);
 
-        log('Authentication error during sync');
-      } else {
-        // Show error
-        console.error('Sync failed:', response?.error);
-        log('Sync failed:', response?.error);
-        alert('Sync failed. Please try again later.');
+          // Clear auth data and show login form
+          chrome.storage.local.remove(['authToken', 'user'], () => {
+            console.log('[SilentZone Popup] Cleared auth data due to authentication error');
+            checkAuthStatus();
+
+            // Show the token expired message
+            const tokenExpiredMessage = document.getElementById('token-expired-message');
+            if (tokenExpiredMessage) {
+              tokenExpiredMessage.textContent = 'Your session has expired. Please sign in again.';
+              tokenExpiredMessage.classList.remove('hidden');
+            }
+          });
+
+          log('Authentication error during sync');
+        } else {
+          // Show error
+          console.error('[SilentZone Popup] Sync failed:', response?.error);
+          log('Sync failed:', response?.error);
+          alert('Sync failed. Please try again later.');
+        }
       }
-    }
+    });
 
     // Re-enable button
     log('Re-enabling syncBtn');
+    console.log('[SilentZone Popup] Re-enabling sync button');
     syncBtn.disabled = false;
     syncBtn.textContent = 'Sync Now';
     syncBtn.style.opacity = '1';
@@ -1026,6 +1096,19 @@ function syncNow() {
     setTimeout(() => {
       syncBtn.style.display = 'block';
     }, 10);
+
+    // Check if we need to reload the popup to show updated rules
+    console.log('[SilentZone Popup] Checking if we need to reload the popup');
+    chrome.storage.local.get(['muteRules'], (result) => {
+      const storedRules = result.muteRules || [];
+      console.log('[SilentZone Popup] Rules in storage after sync:', storedRules.length);
+
+      // If we have rules in storage but none in the UI, reload the popup
+      if (storedRules.length > 0 && (!muteRules || muteRules.length === 0)) {
+        console.log('[SilentZone Popup] Rules mismatch detected, reloading popup');
+        window.location.reload();
+      }
+    });
   });
 }
 
@@ -1046,10 +1129,60 @@ function updateLastSyncTime(timestamp) {
 }
 
 /**
+ * Check API endpoint directly
+ */
+async function checkApiEndpoint() {
+  console.log('[SilentZone Popup] Checking API endpoint directly...');
+
+  try {
+    // Get auth token
+    const authData = await chrome.storage.local.get(['authToken', 'user']);
+    const authToken = authData.authToken;
+
+    if (!authToken) {
+      console.log('[SilentZone Popup] No auth token found, skipping API check');
+      return;
+    }
+
+    console.log('[SilentZone Popup] Auth token found, checking API endpoint');
+
+    // Make a direct request to the API endpoint
+    const apiUrl = `${popupConfig.webAppUrl}/api/supabase-mute-rules?supabaseKey=${encodeURIComponent(authToken)}`;
+    console.log('[SilentZone Popup] API URL:', apiUrl);
+
+    const response = await fetch(apiUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
+
+    console.log('[SilentZone Popup] API response status:', response.status, response.statusText);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[SilentZone Popup] API error:', errorText);
+      return;
+    }
+
+    const data = await response.json();
+    console.log('[SilentZone Popup] API response data:', data);
+    console.log('[SilentZone Popup] Mute rules count:', data.muteRules ? data.muteRules.length : 0);
+
+    if (data.muteRules && data.muteRules.length > 0) {
+      console.log('[SilentZone Popup] First mute rule:', data.muteRules[0]);
+    }
+  } catch (error) {
+    console.error('[SilentZone Popup] API check error:', error);
+  }
+}
+
+/**
  * Utility function for logging (only in debug mode)
  */
 function log(...args) {
-  if (config.debugMode) {
+  if (popupConfig.debugMode) {
     console.log('[SilentZone]', ...args);
   }
 }

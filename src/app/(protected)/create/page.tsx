@@ -18,6 +18,7 @@ export default function CreateMuteRulePage() {
   const [keywords, setKeywords] = React.useState<string[]>([]);
   const [selectedDuration, setSelectedDuration] = React.useState<string>("1d");
   const [durationMs, setDurationMs] = React.useState<number>(24 * 60 * 60 * 1000); // Default 1 day
+  const customDurationRef = React.useRef<number | null>(null);
   const [selectedPlatforms, setSelectedPlatforms] = React.useState<Platform[]>([availablePlatforms[0]]); // Default to "All Platforms"
   const [useRegex, setUseRegex] = React.useState<boolean>(false);
   const [caseSensitive, setCaseSensitive] = React.useState<boolean>(false);
@@ -27,26 +28,90 @@ export default function CreateMuteRulePage() {
   const router = useRouter();
   const { addMuteRule } = useSupabaseMuteRules();
 
-  const handleDurationChange = (value: string) => {
+  const handleDurationChange = (value: string, customDurationValue?: number) => {
+    console.log("CRITICAL: handleDurationChange called with value:", value, "and customDurationValue:", customDurationValue);
     setSelectedDuration(value);
 
-    // Set duration in milliseconds based on selection
-    switch (value) {
-      case "1d":
-        setDurationMs(24 * 60 * 60 * 1000); // 1 day
-        break;
-      case "3d":
-        setDurationMs(3 * 24 * 60 * 60 * 1000); // 3 days
-        break;
-      case "1w":
-        setDurationMs(7 * 24 * 60 * 60 * 1000); // 1 week
-        break;
-      case "custom":
-        // Keep current value for custom
-        break;
+    // If a custom duration value is provided, use it directly
+    if (customDurationValue !== undefined) {
+      console.log("CRITICAL: Setting custom duration:", customDurationValue);
+      console.log("CRITICAL: Duration in days:", customDurationValue / (24 * 60 * 60 * 1000));
+      console.log("CRITICAL: Duration in hours:", customDurationValue / (60 * 60 * 1000));
+
+      // Calculate expiry date for reference
+      if (customDurationValue > 0) {
+        const expiryDate = new Date(Date.now() + customDurationValue);
+        console.log("CRITICAL: Will expire on:", expiryDate.toLocaleString());
+      }
+
+      console.log("CRITICAL: Setting durationMs state to:", customDurationValue);
+      setDurationMs(customDurationValue);
+
+      // Store the custom duration in a ref for immediate access
+      customDurationRef.current = customDurationValue;
+      console.log("CRITICAL: Stored custom duration in ref:", customDurationRef.current);
+
+      // Log the current state after a small delay
+      setTimeout(() => {
+        console.log("CRITICAL: After timeout, selectedDuration is:", selectedDuration);
+        console.log("CRITICAL: After timeout, durationMs is:", durationMs);
+        console.log("CRITICAL: After timeout, customDurationRef is:", customDurationRef.current);
+      }, 200);
+
+      return;
     }
 
-    // Analytics event removed
+    // Otherwise, set duration in milliseconds based on selection
+    let newDurationMs = 0;
+
+    switch (value) {
+      case "1h":
+        newDurationMs = 1 * 60 * 60 * 1000; // 1 hour
+        break;
+      case "4h":
+        newDurationMs = 4 * 60 * 60 * 1000; // 4 hours
+        break;
+      case "8h":
+        newDurationMs = 8 * 60 * 60 * 1000; // 8 hours
+        break;
+      case "12h":
+        newDurationMs = 12 * 60 * 60 * 1000; // 12 hours
+        break;
+      case "1d":
+        newDurationMs = 24 * 60 * 60 * 1000; // 1 day
+        break;
+      case "3d":
+        newDurationMs = 3 * 24 * 60 * 60 * 1000; // 3 days
+        break;
+      case "5d":
+        newDurationMs = 5 * 24 * 60 * 60 * 1000; // 5 days
+        break;
+      case "1w":
+        newDurationMs = 7 * 24 * 60 * 60 * 1000; // 1 week
+        break;
+      case "2w":
+        newDurationMs = 14 * 24 * 60 * 60 * 1000; // 2 weeks
+        break;
+      case "1m":
+        newDurationMs = 30 * 24 * 60 * 60 * 1000; // 1 month
+        break;
+      case "3m":
+        newDurationMs = 90 * 24 * 60 * 60 * 1000; // 3 months
+        break;
+      case "6m":
+        newDurationMs = 180 * 24 * 60 * 60 * 1000; // 6 months
+        break;
+      case "permanent":
+        newDurationMs = -1; // Permanent
+        break;
+      case "custom":
+        // Keep current value for custom if no customDurationValue was provided
+        console.log("Custom selected but no duration value provided, keeping current value:", durationMs);
+        return;
+    }
+
+    console.log(`Setting ${value} duration:`, newDurationMs);
+    setDurationMs(newDurationMs);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -80,12 +145,51 @@ export default function CreateMuteRulePage() {
     });
 
     try {
+      // Log detailed information about the duration
+      console.log("CRITICAL: SUBMIT - Selected duration type:", selectedDuration);
+      console.log("CRITICAL: SUBMIT - Duration in milliseconds:", durationMs);
+
+      if (durationMs > 0) {
+        const expiryDate = new Date(Date.now() + durationMs);
+        console.log("CRITICAL: SUBMIT - Will expire on:", expiryDate.toLocaleString());
+        console.log("CRITICAL: SUBMIT - Duration in days:", durationMs / (24 * 60 * 60 * 1000));
+        console.log("CRITICAL: SUBMIT - Duration in hours:", durationMs / (60 * 60 * 1000));
+      } else if (durationMs === -1) {
+        console.log("CRITICAL: SUBMIT - Duration: Permanent (never expires)");
+      } else {
+        console.log("CRITICAL: SUBMIT - WARNING: Duration is zero or negative:", durationMs);
+      }
+
+      // Check if this is a custom duration
+      if (selectedDuration === "custom") {
+        console.log("CRITICAL: SUBMIT - This is a custom duration");
+
+        // Force the correct duration calculation one more time
+        if (customDurationRef.current) {
+          console.log("CRITICAL: SUBMIT - Forcing custom duration calculation");
+          const customDuration = customDurationRef.current;
+          console.log("CRITICAL: SUBMIT - Custom duration from ref:", customDuration);
+        }
+      }
+
+      // Determine the final duration to use
+      let finalDurationMs = durationMs;
+
+      // If this is a custom duration and we have a ref value, use that
+      if (selectedDuration === "custom" && customDurationRef.current !== null) {
+        console.log("CRITICAL: SUBMIT - Using custom duration from ref:", customDurationRef.current);
+        finalDurationMs = customDurationRef.current;
+      }
+
+      console.log("CRITICAL: SUBMIT - Final duration to use:", finalDurationMs);
+      console.log("CRITICAL: SUBMIT - Final duration in hours:", finalDurationMs / (60 * 60 * 1000));
+
       // Create a clean object with only the necessary fields
       const ruleData = {
         keywords: [...keywords], // Create a new array to avoid reference issues
         platforms: selectedPlatforms.map(p => ({ id: p.id, name: p.name })), // Only keep id and name
         start_time: Date.now(),
-        duration_ms: durationMs,
+        duration_ms: finalDurationMs,
         use_regex: useRegex,
         case_sensitive: caseSensitive,
         match_whole_word: matchWholeWord,
@@ -196,7 +300,11 @@ export default function CreateMuteRulePage() {
               </label>
               <DurationSelector
                 selectedDuration={selectedDuration}
-                onDurationChange={handleDurationChange}
+                onDurationChange={(value, customDurationValue) => {
+                  console.log("CRITICAL: DurationSelector onDurationChange called with:", value, customDurationValue);
+                  handleDurationChange(value, customDurationValue);
+                }}
+                customDurationMs={durationMs}
               />
             </div>
 

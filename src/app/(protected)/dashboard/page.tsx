@@ -9,6 +9,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useSupabaseMuteRules } from "@/hooks/use-supabase-mute-rules";
 import { useSupabaseAuth } from "@/contexts/supabase-auth-context";
+import { ExtensionAuthHandler } from "@/components/extension-auth-handler";
 
 export default function DashboardPage() {
   const { user } = useSupabaseAuth();
@@ -55,6 +56,9 @@ export default function DashboardPage() {
 
   return (
     <div className="container max-w-7xl py-10">
+      {/* This component handles extension authentication */}
+      <ExtensionAuthHandler />
+
       {isUsingLocalStorage && (
         <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 rounded-md">
           <div className="flex items-start">

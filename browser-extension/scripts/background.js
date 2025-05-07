@@ -7,15 +7,30 @@
  * 3. Syncing with the SilentZone web app
  */
 
+// Import auth helper
+import { getAuthToken } from './direct-auth-helper.js';
+
 // Store for mute rules
 let muteRules = [];
 
 // Configuration
 const config = {
   syncInterval: 10 * 1000, // How often to sync with web app (10 seconds)
-  webAppUrl: 'http://localhost:9002', // URL of the SilentZone web app
+  webAppUrl: 'http://localhost:9002', // Default URL of the SilentZone web app
   debugMode: true // Enable console logs for debugging
 };
+
+// Try to load the web app URL from storage
+chrome.storage.local.get(['webAppUrl'], (result) => {
+  if (result.webAppUrl) {
+    config.webAppUrl = result.webAppUrl;
+    log('Loaded web app URL from storage:', config.webAppUrl);
+  } else {
+    // Store the default URL
+    chrome.storage.local.set({ webAppUrl: config.webAppUrl });
+    log('Using default web app URL:', config.webAppUrl);
+  }
+});
 
 // Initialize when the extension loads
 initialize();
@@ -321,6 +336,17 @@ function handleMessage(message, sender, sendResponse) {
       return true; // Keep the message channel open for async response
       break;
 
+    case 'startAuthCheck':
+      log('Starting authentication check with sessionId:', message.sessionId);
+
+      // Start a periodic check for authentication
+      startAuthenticationCheck(message.sessionId);
+
+      // Send immediate response
+      sendResponse({ success: true, message: 'Authentication check started' });
+      return false; // No need to keep the message channel open
+      break;
+
     default:
       log('Unknown action:', message.action);
       sendResponse({ success: false, error: 'Unknown action' });
@@ -420,10 +446,8 @@ async function removeMuteRule(ruleId) {
   log('Found rule to remove:', JSON.stringify(ruleToRemove));
 
   try {
-    // First, try to delete the rule directly from the server using the dedicated endpoint
-    // This is more reliable than the sync endpoint for deletions
-    const authData = await chrome.storage.local.get(['authToken']);
-    const authToken = authData.authToken;
+    // Get a valid token using the auth helper
+    const authToken = await getAuthToken();
 
     if (authToken) {
       log('Calling dedicated delete endpoint for rule:', ruleId);
@@ -565,10 +589,8 @@ async function checkForWebAppDeletions() {
   log('Checking for rules deleted in web app...');
 
   try {
-    // Check if we have an auth token
-    const authData = await chrome.storage.local.get(['authToken', 'user']);
-    const authToken = authData.authToken;
-    const user = authData.user;
+    // Get a valid token using the auth helper
+    const authToken = await getAuthToken();
 
     if (!authToken) {
       log('No auth token found, skipping deletion check');
@@ -639,16 +661,20 @@ async function syncWithWebApp() {
     // This is critical to prevent the extension from re-adding rules that were deleted in the web app
     await checkForWebAppDeletions();
 
-    // Check if we have an auth token
-    const authData = await chrome.storage.local.get(['authToken', 'user']);
-    const authToken = authData.authToken;
-    const user = authData.user;
+    // Get a valid token using the auth helper
+    const authToken = await getAuthToken();
+
+    // Get user info
+    const userData = await chrome.storage.local.get(['user']);
+    const user = userData.user;
 
     log('Auth token:', authToken ? 'Found' : 'Not found');
     log('User:', user ? user.email : 'Not found');
+    console.log('[SilentZone] CRITICAL: Auth check - Token:', authToken ? 'Present' : 'Missing', 'User:', user ? user.email : 'Missing');
 
     if (!authToken) {
-      log('No auth token found, skipping sync');
+      log('ERROR: No auth token found, skipping sync');
+      console.error('[SilentZone] CRITICAL: No auth token found, sync aborted');
       return false;
     }
 
@@ -661,7 +687,11 @@ async function syncWithWebApp() {
     // This prevents accidentally deleting rules that exist on the server but not in our extension
     try {
       // First, just get the rules from the server
-      const getResponse = await fetch(`${config.webAppUrl}/api/supabase-mute-rules/sync-with-service-role`, {
+      const apiUrl = `${config.webAppUrl}/api/supabase-mute-rules/sync-with-service-role`;
+      console.log('[SilentZone] CRITICAL: Fetching from API URL:', apiUrl);
+      console.log('[SilentZone] CRITICAL: Using auth token:', authToken ? (authToken.substring(0, 10) + '...') : 'MISSING');
+
+      const getResponse = await fetch(apiUrl, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${authToken}`,
@@ -670,17 +700,22 @@ async function syncWithWebApp() {
         credentials: 'include'
       });
 
+      console.log('[SilentZone] CRITICAL: API response status:', getResponse.status, getResponse.statusText);
+
       if (!getResponse.ok) {
         const errorText = await getResponse.text();
-        log('Error getting rules from server:', errorText);
+        log('ERROR: Getting rules from server failed:', errorText);
+        console.error('[SilentZone] CRITICAL: API error response:', getResponse.status, errorText);
 
         // Check if this is an authentication error (401 Unauthorized)
         if (getResponse.status === 401 || getResponse.status === 403) {
-          log('Authentication error detected. Token may be expired.');
+          log('ERROR: Authentication error detected. Token may be expired.');
+          console.error('[SilentZone] CRITICAL: Authentication error detected. Token may be expired.');
 
           // Clear the stored auth token and user data
           await chrome.storage.local.remove(['authToken', 'user']);
           log('Cleared expired authentication data');
+          console.log('[SilentZone] CRITICAL: Cleared expired authentication data');
 
           // Notify any open popups about the auth error
           chrome.runtime.sendMessage({
@@ -697,6 +732,14 @@ async function syncWithWebApp() {
       const getData = await getResponse.json();
       log('GET response data:', getData ? 'Received' : 'Empty');
       log('Server rules count:', getData.serverRules ? getData.serverRules.length : 0);
+      console.log('[SilentZone] CRITICAL: API response data received:', getData ? 'YES' : 'NO');
+      console.log('[SilentZone] CRITICAL: Server rules count:', getData.serverRules ? getData.serverRules.length : 0);
+
+      if (getData.serverRules && getData.serverRules.length > 0) {
+        console.log('[SilentZone] CRITICAL: First server rule:', JSON.stringify(getData.serverRules[0]));
+      } else {
+        console.log('[SilentZone] CRITICAL: No server rules found in response');
+      }
 
       // CRITICAL FIX: Check for web app deletions
       // If we have rules locally but they don't exist on the server, they were likely deleted in the web app
@@ -948,10 +991,12 @@ async function forceFullSync() {
     // This is critical to prevent the extension from re-adding rules that were deleted in the web app
     await checkForWebAppDeletions();
 
-    // Check if we have an auth token
-    const authData = await chrome.storage.local.get(['authToken', 'user']);
-    const authToken = authData.authToken;
-    const user = authData.user;
+    // Get a valid token using the auth helper
+    const authToken = await getAuthToken();
+
+    // Get user info
+    const userData = await chrome.storage.local.get(['user']);
+    const user = userData.user;
 
     log('Auth token:', authToken ? 'Found' : 'Not found');
     log('User:', user ? user.email : 'Not found');
@@ -1199,10 +1244,12 @@ async function syncAfterDeletion() {
   log('Syncing with web app after rule deletion...');
 
   try {
-    // Check if we have an auth token
-    const authData = await chrome.storage.local.get(['authToken', 'user']);
-    const authToken = authData.authToken;
-    const user = authData.user;
+    // Get a valid token using the auth helper
+    const authToken = await getAuthToken();
+
+    // Get user info
+    const userData = await chrome.storage.local.get(['user']);
+    const user = userData.user;
 
     log('Auth token:', authToken ? 'Found' : 'Not found');
     log('User:', user ? user.email : 'Not found');
@@ -1265,10 +1312,123 @@ function generateUniqueId() {
 }
 
 /**
+ * Start checking for authentication completion
+ */
+function startAuthenticationCheck(sessionId) {
+  log('Starting authentication check for sessionId:', sessionId);
+
+  // Set up an interval to check for authentication
+  const checkInterval = setInterval(async () => {
+    try {
+      log('Checking for authentication completion...');
+
+      // Call the extension-token API to check if the user has authenticated
+      const tokenUrl = `${config.webAppUrl}/api/auth/extension-token?sessionId=${sessionId}&timestamp=${Date.now()}`;
+      log('Checking token URL:', tokenUrl);
+
+      const response = await fetch(tokenUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include'
+      });
+
+      log('Token check response status:', response.status);
+
+      if (response.ok) {
+        const data = await response.json();
+        log('Token check response data:', {
+          success: data.success,
+          hasToken: !!data.token,
+          hasUser: !!data.user
+        });
+
+        if (data.success && data.token && data.user) {
+          // Authentication successful, store the token and user data
+          log('Authentication successful, storing token and user data');
+
+          await chrome.storage.local.set({
+            authToken: data.token,
+            refreshToken: data.refresh_token,
+            tokenExpiry: data.expires_at,
+            user: data.user,
+            pendingAuthSessionId: null // Clear the pending session ID
+          });
+
+          // Clear the interval
+          clearInterval(checkInterval);
+
+          // Trigger a sync with the web app
+          log('Triggering sync after authentication');
+          syncWithWebApp();
+
+          // Notify the popup that authentication is complete
+          chrome.runtime.sendMessage({
+            action: 'authComplete',
+            success: true
+          });
+
+          // Force a full sync to ensure all data is up to date
+          forceFullSync();
+
+          return;
+        }
+      }
+
+      // Check if we've been checking for too long (2 minutes)
+      const pendingAuthData = await chrome.storage.local.get(['pendingAuthStartTime']);
+      const startTime = pendingAuthData.pendingAuthStartTime || Date.now();
+      const elapsed = Date.now() - startTime;
+
+      if (elapsed > 2 * 60 * 1000) { // 2 minutes
+        log('Authentication check timed out after 2 minutes');
+
+        // Clear the interval
+        clearInterval(checkInterval);
+
+        // Clear the pending session ID
+        await chrome.storage.local.set({
+          pendingAuthSessionId: null,
+          pendingAuthStartTime: null
+        });
+
+        // Notify the popup that authentication failed
+        chrome.runtime.sendMessage({
+          action: 'authComplete',
+          success: false,
+          error: 'Authentication timed out. Please try again.'
+        });
+
+        return;
+      }
+    } catch (error) {
+      log('Error checking for authentication:', error);
+    }
+  }, 2000); // Check every 2 seconds
+
+  // Store the start time
+  chrome.storage.local.set({
+    pendingAuthStartTime: Date.now()
+  });
+
+  // Set a timeout to clear the interval after 2 minutes
+  setTimeout(() => {
+    clearInterval(checkInterval);
+    log('Authentication check interval cleared after timeout');
+  }, 2 * 60 * 1000); // 2 minutes
+}
+
+/**
  * Utility function for logging (only in debug mode)
  */
 function log(...args) {
   if (config.debugMode) {
     console.log('[SilentZone]', ...args);
+  }
+
+  // Always log errors to console regardless of debug mode
+  if (args[0] && (args[0].includes('ERROR') || args[0].includes('CRITICAL'))) {
+    console.error('[SilentZone]', ...args);
   }
 }

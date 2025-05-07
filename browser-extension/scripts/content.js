@@ -11,13 +11,14 @@
 const config = {
   scanInterval: 1000, // How often to scan for new content (in ms)
   blurAmount: '8px',  // How much to blur content
-  debugMode: false,   // Enable console logs for debugging
+  debugMode: true,   // Enable console logs for debugging
   webAppUrl: 'http://localhost:9002' // URL of the SilentZone web app
 };
 
 // Store for mute rules
 let muteRules = [];
 let currentPlatform = detectPlatform();
+let isActive = true; // Default to active
 
 // Initialize when the content script loads
 initialize();
@@ -28,15 +29,32 @@ initialize();
 function initialize() {
   log('SilentZone content script initialized');
 
-  // Request mute rules from background script
-  chrome.runtime.sendMessage({ action: 'getMuteRules' }, (response) => {
-    if (response && response.muteRules) {
-      muteRules = response.muteRules;
-      log('Received mute rules:', muteRules);
-
-      // Start scanning the page
-      startContentScanner();
+  // Load extension state (active/paused)
+  chrome.storage.local.get(['isActive'], (result) => {
+    if (result.isActive !== undefined) {
+      isActive = result.isActive;
+      log('Extension active state:', isActive ? 'Active' : 'Paused');
     }
+
+    // Request mute rules from background script
+    chrome.runtime.sendMessage({ action: 'getMuteRules' }, (response) => {
+      if (response && response.muteRules) {
+        muteRules = response.muteRules;
+        log('Received mute rules:', muteRules);
+
+        // If extension is paused, make sure we don't show any warnings
+        if (!isActive) {
+          log('Extension is paused on initialization, ensuring no warnings are shown');
+          // Remove any existing warnings
+          unmutePage();
+        } else {
+          log('Extension is active on initialization, starting content scanner');
+        }
+
+        // Start scanning the page
+        startContentScanner();
+      }
+    });
   });
 
   // Listen for messages from the background script
@@ -62,6 +80,36 @@ function initialize() {
           scanPage();
         }
       });
+
+      sendResponse({ success: true });
+    }
+    else if (message.action === 'updateActiveState') {
+      isActive = message.isActive;
+      log('Updated active state:', isActive ? 'Active' : 'Paused');
+
+      if (isActive) {
+        // If we're now active, scan the page to apply rules
+        log('Extension is now active, scanning page to apply rules');
+        scanPage();
+      } else {
+        // If we're now paused, unmute all elements and remove warnings
+        log('Extension is now paused, unmuting all elements and removing warnings');
+
+        // FORCE REMOVE ALL WARNINGS IMMEDIATELY
+        const pageWarnings = document.querySelectorAll('.silent-zone-page-warning');
+        if (pageWarnings.length > 0) {
+          log(`Found ${pageWarnings.length} page warnings, removing them immediately`);
+          pageWarnings.forEach(warning => {
+            warning.remove();
+          });
+        }
+
+        // Restore scrolling
+        document.body.style.overflow = '';
+
+        // Then do the regular unmute
+        unmutePage();
+      }
 
       sendResponse({ success: true });
     }
@@ -133,7 +181,26 @@ function startContentScanner() {
  * Scan the page for content matching mute rules
  */
 function scanPage() {
-  log('Scanning page for muted content');
+  log('Scanning page for muted content, extension active:', isActive);
+
+  // If extension is paused, unmute everything and exit
+  if (!isActive) {
+    log('Extension is paused, unmuting everything and exiting scan');
+    unmutePage();
+
+    // Make sure no page-level warnings are visible
+    const pageWarnings = document.querySelectorAll('.silent-zone-page-warning');
+    if (pageWarnings.length > 0) {
+      log(`Found ${pageWarnings.length} page warnings during scan while paused, removing them`);
+      pageWarnings.forEach(warning => {
+        warning.remove();
+      });
+      // Restore scrolling
+      document.body.style.overflow = '';
+    }
+
+    return;
+  }
 
   // Get all text-containing elements
   const textElements = getTextElements();
@@ -294,6 +361,18 @@ function getNearbyElements(element, selector, maxDistance) {
  * Show a page-level warning for muted content
  */
 function showPageLevelWarning(rule) {
+  // If extension is paused, don't show any warnings
+  if (!isActive) {
+    log('Extension is paused, not showing page-level warning');
+    return;
+  }
+
+  // Check if this page has been temporarily allowed by the user
+  if (window.silentZonePageAllowed) {
+    log('Page has been temporarily allowed by user, not showing warning');
+    return;
+  }
+
   // Check if warning already exists
   if (document.querySelector('.silent-zone-page-warning')) {
     return;
@@ -325,14 +404,54 @@ function showPageLevelWarning(rule) {
   warning.style.alignItems = 'center';
   warning.style.justifyContent = 'center';
 
-  // Add event listeners
-  warning.querySelector('.silent-zone-page-warning-proceed').addEventListener('click', () => {
-    warning.remove();
-  });
+  // Add event listeners with direct DOM manipulation for maximum reliability
+  const proceedButton = warning.querySelector('.silent-zone-page-warning-proceed');
+  if (proceedButton) {
+    proceedButton.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
 
-  warning.querySelector('.silent-zone-page-warning-back').addEventListener('click', () => {
-    window.history.back();
-  });
+      // Force remove the warning
+      warning.style.display = 'none';
+      setTimeout(() => {
+        if (warning.parentNode) {
+          warning.parentNode.removeChild(warning);
+        }
+        log('User clicked Proceed Anyway, forcibly removed page-level warning');
+      }, 10);
+
+      // Restore scrolling immediately
+      document.body.style.overflow = '';
+
+      // Create a temporary allowlist for this page to prevent the warning from reappearing
+      const currentUrl = window.location.href;
+      log('Adding current URL to temporary allowlist:', currentUrl);
+
+      // Set a flag to prevent re-showing the warning on this page
+      window.silentZonePageAllowed = true;
+
+      // Also set a flag in localStorage to persist across page refreshes
+      try {
+        localStorage.setItem('silentZonePageAllowed_' + window.location.hostname, 'true');
+        log('Saved allowlist status to localStorage');
+      } catch (e) {
+        log('Failed to save to localStorage:', e);
+      }
+
+      return false;
+    });
+  }
+
+  const backButton = warning.querySelector('.silent-zone-page-warning-back');
+  if (backButton) {
+    backButton.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      window.history.back();
+      log('User clicked Go Back, navigating to previous page');
+      return false;
+    });
+  }
 
   // Add to page
   document.body.appendChild(warning);
@@ -607,6 +726,50 @@ function detectPlatform() {
 
   // Default to 'news' for other websites
   return 'news';
+}
+
+/**
+ * Unmute all elements on the page
+ */
+function unmutePage() {
+  log('Unmuting all elements due to paused state');
+
+  // Find all muted elements
+  const mutedElements = document.querySelectorAll('[data-silent-zone-muted="true"]');
+
+  // Unmute each element
+  mutedElements.forEach(element => {
+    unmuteElement(element);
+  });
+
+  // Also remove any page-level warnings
+  const pageWarnings = document.querySelectorAll('.silent-zone-page-warning');
+  pageWarnings.forEach(warning => {
+    warning.remove();
+    log('Removed page-level warning due to paused state');
+  });
+
+  // Restore scrolling if it was disabled
+  if (document.body.style.overflow === 'hidden') {
+    document.body.style.overflow = '';
+    log('Restored page scrolling');
+  }
+
+  // Force a re-scan of the page after a short delay to ensure all warnings are removed
+  setTimeout(() => {
+    log('Performing follow-up scan to ensure all warnings are removed');
+    // Check again for any remaining warnings
+    const remainingWarnings = document.querySelectorAll('.silent-zone-page-warning');
+    if (remainingWarnings.length > 0) {
+      log(`Found ${remainingWarnings.length} remaining warnings, removing them`);
+      remainingWarnings.forEach(warning => {
+        warning.remove();
+      });
+
+      // Make sure scrolling is restored
+      document.body.style.overflow = '';
+    }
+  }, 500);
 }
 
 /**
