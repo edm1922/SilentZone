@@ -15,40 +15,258 @@
       </div>
       <p class="subtitle">Filter the web, your way</p>
     </header>
-    
-    <div class="status-section">
-      <div class="status-indicator">
-        <span class="status-dot active" id="statusDot"></span>
-        <span class="status-text" id="statusText">Active</span>
+
+    <!-- Authentication Section -->
+    <div id="auth-section" class="auth-section">
+      <h2>Sign in to SilentZone</h2>
+      <div id="token-expired-message" class="token-expired-message hidden">
+        Your session has expired. Please sign in again.
       </div>
-      <button class="toggle-btn" id="toggleBtn">Pause</button>
+      <form id="login-form" class="login-form">
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" placeholder="you@example.com" required>
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" required>
+        </div>
+        <div id="login-error" class="error-message hidden"></div>
+        <button type="submit" id="login-btn" class="primary-btn">Sign in</button>
+        <p class="auth-footer">
+          Don't have an account? <a href="#" id="openSignupBtn">Sign up</a>
+        </p>
+      </form>
     </div>
-    
-    <div class="divider"></div>
-    
-    <div class="active-mutes" id="activeMutes">
-      <h2>Active Mutes</h2>
-      <div class="mute-list" id="muteList">
-        <!-- Mute items will be inserted here dynamically -->
-        <div class="empty-state" id="emptyState">
-          <p>No active mute rules</p>
-          <p class="empty-subtext">Add mute rules in the SilentZone web app</p>
+
+    <!-- Main Content Section (shown after login) -->
+    <div id="content-section" class="content-section hidden">
+      <div class="user-info-section">
+        <span id="user-info">Signed in</span>
+        <button id="logout-btn" class="text-btn">Sign out</button>
+      </div>
+
+      <div class="status-section">
+        <div class="status-indicator">
+          <span class="status-dot active" id="statusDot"></span>
+          <span class="status-text" id="statusText">Active</span>
+        </div>
+        <button class="toggle-btn" id="toggleBtn">Pause</button>
+      </div>
+
+
+
+      <div class="divider"></div>
+
+      <div class="active-mutes" id="activeMutes">
+        <div class="mute-header">
+          <h2>Active Mutes</h2>
+        </div>
+        <div class="mute-list" id="muteList">
+          <!-- Mute items will be inserted here dynamically -->
+          <div class="empty-state" id="emptyState">
+            <p>No active mute rules</p>
+            <p class="empty-subtext">Please use the web app to create and manage mute rules</p>
+          </div>
         </div>
       </div>
+
+      <div class="divider"></div>
+
+      <div class="actions">
+        <button class="primary-btn" id="openAppBtn">Open SilentZone App to Create Rules</button>
+      </div>
+
+      <footer>
+        <p><strong>Rules sync automatically every 10 seconds</strong></p>
+        <p id="lastSyncInfo" style="font-size: 11px; color: #6b7280; margin-top: 4px;"></p>
+        <p id="syncTimestamp" style="font-size: 11px; color: #6b7280; margin-top: 2px;"></p>
+      </footer>
+
+      <script>
+
+
+
+
+        // Wait for DOM to be fully loaded
+        document.addEventListener('DOMContentLoaded', function() {
+          console.log('DOM fully loaded');
+
+          // Add event listener for the quick add link
+          const quickAddLink = document.getElementById('quickAddLink');
+          if (quickAddLink) {
+            console.log('Found quickAddLink, adding click listener');
+            quickAddLink.addEventListener('click', function(e) {
+              e.preventDefault();
+              console.log('Quick add link clicked');
+              addQuickRule();
+            });
+          } else {
+            console.log('quickAddLink not found');
+          }
+
+          // Auto-fix: Display rules from storage
+          setTimeout(function() {
+            console.log('Auto-fixing rules display...');
+
+            // Get rules directly from storage
+            chrome.storage.local.get(['muteRules'], (result) => {
+              console.log('Rules in storage:', result.muteRules ? result.muteRules.length : 0);
+
+              if (result.muteRules && result.muteRules.length > 0) {
+                console.log('Rules found in storage:', JSON.stringify(result.muteRules, null, 2));
+
+                // Force display of rules
+                const muteList = document.getElementById('muteList');
+                const emptyState = document.getElementById('emptyState');
+
+                if (muteList && emptyState) {
+                  // Hide empty state
+                  emptyState.style.display = 'none';
+
+                  // Clear existing items
+                  Array.from(muteList.children).forEach(child => {
+                    if (child !== emptyState) {
+                      child.remove();
+                    }
+                  });
+
+                  // Add mute items
+                  result.muteRules.forEach((rule) => {
+                    const item = document.createElement('div');
+                    item.className = 'mute-item';
+
+                    // Create platform badges HTML
+                    const platformsHtml = Array.isArray(rule.platforms) ? rule.platforms.map(platform => {
+                      const platformName = typeof platform === 'string' ? platform : (platform.name || platform.id || 'Unknown');
+                      return `<span class="platform-badge">${platformName}</span>`;
+                    }).join('') : '';
+
+                    // Set item HTML
+                    item.innerHTML = `
+                      <div class="mute-item-header">
+                        <div class="mute-keywords">${rule.keywords.join(', ')}</div>
+                        <button class="mute-remove" data-rule-id="${rule.id}">Remove</button>
+                      </div>
+                      <div class="mute-details">
+                        <div>Time remaining: 7 days</div>
+                        <div class="mute-platforms">
+                          ${platformsHtml}
+                        </div>
+                      </div>
+                    `;
+
+                    muteList.appendChild(item);
+                  });
+
+                  console.log('Successfully displayed ' + result.muteRules.length + ' rules!');
+                } else {
+                  console.error('Could not find muteList or emptyState elements');
+                }
+              } else {
+                console.log('No rules found in storage');
+              }
+            });
+          }, 500); // Delay to ensure DOM is fully loaded
+        });
+
+        function openApp() {
+          chrome.tabs.create({ url: 'http://localhost:9002' });
+        }
+
+        function openCreateRule() {
+          chrome.tabs.create({ url: 'http://localhost:9002/create-rule' });
+        }
+
+        function addRule() {
+          console.log('Add rule button clicked via inline handler');
+          addQuickRule();
+        }
+
+        function addQuickRule() {
+          // Prompt for keyword
+          const keyword = prompt('Enter a keyword to mute:');
+          if (!keyword || keyword.trim() === '') {
+            return;
+          }
+
+          console.log('Creating rule for keyword:', keyword);
+
+          // Create a simple rule
+          const rule = {
+            keywords: [keyword.trim()],
+            platforms: [{ name: 'All Platforms', id: 'all' }],
+            startTime: Date.now(),
+            durationMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+            useRegex: false,
+            caseSensitive: false,
+            matchWholeWord: false
+          };
+
+          console.log('Sending addMuteRule message with rule:', rule);
+
+          // Add the rule
+          chrome.runtime.sendMessage({
+            action: 'addMuteRule',
+            rule: rule
+          }, (response) => {
+            console.log('Add rule response:', response);
+
+            if (response && response.success) {
+              // Reload the popup to show the new rule
+              window.location.reload();
+            } else {
+              alert('Failed to add rule. Please try again.');
+            }
+          });
+        }
+
+        function syncNow() {
+          console.log('Sync button clicked via inline handler');
+          // Get the sync button
+          const syncBtn = document.getElementById('syncBtn');
+          if (syncBtn) {
+            // Disable the button to show it's working
+            syncBtn.disabled = true;
+            syncBtn.textContent = 'Syncing...';
+
+            // Send message to background script
+            chrome.runtime.sendMessage({ action: 'syncNow' }, (response) => {
+              console.log('Sync response:', response);
+
+              // Re-enable the button
+              syncBtn.disabled = false;
+              syncBtn.textContent = 'Sync Now';
+
+              if (response && response.success) {
+                // Update last sync time
+                const now = Date.now();
+                const lastSyncTime = document.getElementById('lastSyncTime');
+                if (lastSyncTime) {
+                  const date = new Date(now);
+                  lastSyncTime.textContent = date.toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+                }
+
+                // Reload the popup to show updated rules
+                window.location.reload();
+              } else {
+                alert('Sync failed. Please try again later.');
+              }
+            });
+          }
+        }
+
+        // Refresh function removed - using automatic 10-second sync instead
+      </script>
+
     </div>
-    
-    <div class="divider"></div>
-    
-    <div class="actions">
-      <button class="primary-btn" id="openAppBtn">Open SilentZone App</button>
-      <button class="secondary-btn" id="syncBtn">Sync Now</button>
-    </div>
-    
-    <footer>
-      <p>Last synced: <span id="lastSyncTime">Never</span></p>
-    </footer>
   </div>
-  
+
+  <script src="auth.js"></script>
+  <script src="../simple-fix.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

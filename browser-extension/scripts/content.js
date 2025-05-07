@@ -11,7 +11,8 @@
 const config = {
   scanInterval: 1000, // How often to scan for new content (in ms)
   blurAmount: '8px',  // How much to blur content
-  debugMode: false    // Enable console logs for debugging
+  debugMode: false,   // Enable console logs for debugging
+  webAppUrl: 'http://localhost:9002' // URL of the SilentZone web app
 };
 
 // Store for mute rules
@@ -48,8 +49,64 @@ function initialize() {
       scanPage();
       sendResponse({ success: true });
     }
+    else if (message.action === 'refreshData') {
+      log('Received refreshData message, timestamp:', message.timestamp);
+
+      // Request fresh mute rules from background script
+      chrome.runtime.sendMessage({ action: 'getMuteRules' }, (response) => {
+        if (response && response.muteRules) {
+          muteRules = response.muteRules;
+          log('Refreshed mute rules:', muteRules);
+
+          // Re-scan the page with new rules
+          scanPage();
+        }
+      });
+
+      sendResponse({ success: true });
+    }
     return true; // Keep the message channel open for async responses
   });
+
+  // Listen for web app changes if we're on the web app page
+  if (window.location.href.includes(config.webAppUrl) ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname.includes('silentzone')) {
+
+    log('Detected SilentZone web app, setting up change listeners');
+
+    // Listen for custom events from the web app
+    window.addEventListener('silentzone_data_changed', (event) => {
+      log('Received data change event from web app:', event.detail);
+
+      // Reload the extension data
+      chrome.runtime.sendMessage({ action: 'forceFullSync' }, (response) => {
+        log('Force sync response after web app change:', response);
+      });
+    });
+
+    // Also check localStorage periodically for changes
+    setInterval(() => {
+      const changeTimestamp = localStorage.getItem('silentzone_changes_timestamp');
+      if (changeTimestamp) {
+        const timestamp = parseInt(changeTimestamp);
+        const now = Date.now();
+
+        // Only process recent changes (within the last 5 seconds)
+        if (now - timestamp < 5000) {
+          log('Detected recent change in web app via localStorage');
+
+          // Clear the timestamp to avoid processing it again
+          localStorage.removeItem('silentzone_changes_timestamp');
+
+          // Reload the extension data
+          chrome.runtime.sendMessage({ action: 'forceFullSync' }, (response) => {
+            log('Force sync response after localStorage change:', response);
+          });
+        }
+      }
+    }, 2000); // Check every 2 seconds
+  }
 }
 
 /**
@@ -332,9 +389,6 @@ function getPlatformSelectors(platform) {
  * Check if text content matches any mute rule
  */
 function findMatchingRule(text) {
-  // Convert text to lowercase for case-insensitive matching
-  const lowerText = text.toLowerCase();
-
   // Find the first matching rule
   return muteRules.find(rule => {
     // Check if rule applies to current platform
@@ -348,7 +402,7 @@ function findMatchingRule(text) {
     }
 
     // Check if any keyword matches using advanced matching
-    return rule.keywords.some(keyword => matchKeyword(lowerText, keyword.toLowerCase(), rule));
+    return rule.keywords.some(keyword => matchKeyword(text, keyword, rule));
   });
 }
 
@@ -373,76 +427,14 @@ function matchKeyword(text, keyword, rule) {
   const compareText = (rule && rule.caseSensitive) ? text : text.toLowerCase();
   const compareKeyword = (rule && rule.caseSensitive) ? keyword : keyword.toLowerCase();
 
-  // Check for exact match first (most efficient)
-  if (compareText.includes(compareKeyword)) {
-    // If whole word matching is required, verify it's a whole word
-    if (rule && rule.matchWholeWord) {
-      const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(compareKeyword)}\\b`, rule.caseSensitive ? '' : 'i');
-      if (wordBoundaryRegex.test(compareText)) {
-        return true;
-      }
-    } else {
-      return true;
-    }
-  }
-
-  // If whole word matching is required, we've already checked above
+  // Check for whole word matching
   if (rule && rule.matchWholeWord) {
-    return false;
+    const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(compareKeyword)}\\b`, rule.caseSensitive ? '' : 'i');
+    return wordBoundaryRegex.test(compareText);
   }
 
-  // Check for word boundary matches to avoid partial word matches
-  // For example, "cat" shouldn't match "category"
-  const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(compareKeyword)}\\b`, rule && rule.caseSensitive ? '' : 'i');
-  if (wordBoundaryRegex.test(compareText)) {
-    return true;
-  }
-
-  // Check for phrases (multiple words)
-  if (compareKeyword.includes(' ')) {
-    // For phrases, we're a bit more lenient - allow for some words in between
-    // This helps match variations like "Game of Thrones spoiler" when keyword is "Game of Thrones"
-    const words = compareKeyword.split(' ');
-    let lastIndex = -1;
-    let allWordsFound = true;
-
-    for (const word of words) {
-      if (word.length <= 2) continue; // Skip very short words like "of", "to", etc.
-
-      const index = compareText.indexOf(word, lastIndex + 1);
-      if (index === -1) {
-        allWordsFound = false;
-        break;
-      }
-      lastIndex = index;
-    }
-
-    if (allWordsFound) {
-      return true;
-    }
-  }
-
-  // Check for common variations (plurals, possessives, etc.)
-  if (compareKeyword.length > 3) {
-    // Check for plural forms
-    if (compareText.includes(compareKeyword + 's') || compareText.includes(compareKeyword + 'es')) {
-      return true;
-    }
-
-    // Check for possessive forms
-    if (compareText.includes(compareKeyword + "'s")) {
-      return true;
-    }
-
-    // Check for past tense for verbs (simple case)
-    if (compareKeyword.endsWith('e') && compareText.includes(compareKeyword + 'd')) {
-      return true;
-    } else if (compareText.includes(compareKeyword + 'ed')) {
-      return true;
-    }
-  }
-
-  return false;
+  // Simple substring matching
+  return compareText.includes(compareKeyword);
 }
 
 /**
